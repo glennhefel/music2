@@ -1,5 +1,11 @@
 /.pytest_cache
 /.venv
+/.venv-tf
+**/__pycache__/
+
+# Generated model checkpoints
+*.pt
+*.pth
 
 # Local datasets and generated feature files
 /Data/

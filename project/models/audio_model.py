@@ -23,3 +23,18 @@ class AudioRepresentationModel(nn.Module):
         transformer_embedding = self.transformer(tokens)
         reconstruction, mu, log_var, z = self.vae(transformer_embedding)
         return {"transformer_embedding": transformer_embedding, "reconstruction": reconstruction, "mu": mu, "log_var": log_var, "z": z}
+
+
+class AudioClassificationModel(nn.Module):
+    def __init__(self, num_classes: int, config: Optional[ModelConfig] = None, feature_extractor: Optional[nn.Module] = None) -> None:
+        super().__init__()
+        if num_classes <= 1:
+            raise ValueError("num_classes must be greater than one")
+        config = config or ModelConfig()
+        self.representation = AudioRepresentationModel(config, feature_extractor)
+        self.classifier = nn.Linear(config.vae_latent_dim, num_classes)
+
+    def forward(self, windows_or_features: Tensor) -> dict[str, Tensor]:
+        outputs = self.representation(windows_or_features)
+        outputs["logits"] = self.classifier(outputs["mu"])
+        return outputs
