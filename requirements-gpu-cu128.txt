@@ -1,0 +1,4 @@
+# Python 3.11 environment for the full musicnn + PyTorch pipeline.
+# Install with install.ps1; PyTorch is replaced with the CUDA 12.8 wheel there.
+-r project/requirements.txt
+-r project/requirements-musicnn-tf.txt
