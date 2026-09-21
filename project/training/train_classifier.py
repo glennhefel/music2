@@ -24,7 +24,7 @@ def read_labels(*manifest_paths: Path) -> list[str]:
     return result
 
 
-def run_epoch(model, loader, label_to_index, optimizer, device, beta):
+def run_epoch(model, loader, label_to_index, optimizer, device, beta, vae_weight=0.23):
     training = optimizer is not None
     model.train(training)
     total_loss = total_correct = total_items = 0
@@ -39,7 +39,7 @@ def run_epoch(model, loader, label_to_index, optimizer, device, beta):
         outputs = model(audio, handcrafted_features)
         vae_total, _, _ = audio_vae_loss(outputs, beta)
         classification_loss = nn.functional.cross_entropy(outputs["logits"], labels)
-        loss = classification_loss + 0.1 * vae_total
+        loss = classification_loss + vae_weight * vae_total
         if training:
             loss.backward()
             optimizer.step()
@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=ModelConfig().learning_rate)
     parser.add_argument("--beta", type=float, default=ModelConfig().vae_beta)
     parser.add_argument("--dropout", type=float, default=ModelConfig().transformer_dropout)
+    parser.add_argument("--vae-loss-weight", type=float, default=0.23)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     if not 0.0 <= args.dropout < 1.0:
@@ -89,9 +90,9 @@ def main() -> None:
     best_validation_loss = float("inf")
     try:
         for epoch in range(1, args.epochs + 1):
-            train_loss, train_accuracy = run_epoch(model, loaders[0], label_to_index, optimizer, args.device, args.beta)
+            train_loss, train_accuracy = run_epoch(model, loaders[0], label_to_index, optimizer, args.device, args.beta, args.vae_loss_weight)
             with torch.no_grad():
-                validation_loss, validation_accuracy = run_epoch(model, loaders[1], label_to_index, None, args.device, args.beta)
+                validation_loss, validation_accuracy = run_epoch(model, loaders[1], label_to_index, None, args.device, args.beta, args.vae_loss_weight)
             print(f"epoch={epoch} train_loss={train_loss:.6f} train_accuracy={train_accuracy:.4f} validation_loss={validation_loss:.6f} validation_accuracy={validation_accuracy:.4f}")
             if validation_loss < best_validation_loss:
                 best_validation_loss = validation_loss
@@ -99,7 +100,7 @@ def main() -> None:
         checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=True)
         model.load_state_dict(checkpoint["model"])
         with torch.no_grad():
-            test_loss, test_accuracy = run_epoch(model, loaders[2], label_to_index, None, args.device, args.beta)
+            test_loss, test_accuracy = run_epoch(model, loaders[2], label_to_index, None, args.device, args.beta, args.vae_loss_weight)
         print(f"test_loss={test_loss:.6f} test_accuracy={test_accuracy:.4f}")
         print(f"classes={labels}")
         print(f"saved={args.checkpoint}")
