@@ -95,18 +95,42 @@ def collect_recordings(input_dir: Path, metadata_path: Path | None, use_folder_l
 
 
 def split_recordings(recordings: list[Recording], seed: int, train_ratio: float, val_ratio: float) -> dict[str, list[Recording]]:
+    """Stratified recording-level split.
+
+    Recordings are grouped by ``era_label`` before splitting so that every
+    split receives a proportional share of each class.  Within each class the
+    order is deterministic given ``seed``.
+    """
     if not 0 < train_ratio < 1 or not 0 <= val_ratio < 1 or train_ratio + val_ratio >= 1:
         raise ValueError("train and validation ratios must be valid and leave room for test")
-    ordered = sorted(recordings, key=lambda item: item.recording_id)
+
+    # Group recordings by label (sorted for determinism)
+    groups: dict[str, list[Recording]] = {}
+    for recording in sorted(recordings, key=lambda r: r.recording_id):
+        groups.setdefault(recording.era_label, []).append(recording)
+
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(ordered))
-    shuffled = [ordered[index] for index in order]
-    train_end = math.floor(len(shuffled) * train_ratio)
-    val_end = train_end + math.floor(len(shuffled) * val_ratio)
-    if len(shuffled) >= 3:
-        train_end = max(1, min(train_end, len(shuffled) - 2))
-        val_end = max(train_end + 1, min(val_end, len(shuffled) - 1))
-    return {"train": shuffled[:train_end], "validation": shuffled[train_end:val_end], "test": shuffled[val_end:]}
+    splits: dict[str, list[Recording]] = {"train": [], "validation": [], "test": []}
+
+    for label in sorted(groups):
+        group = groups[label]
+        order = rng.permutation(len(group))
+        shuffled = [group[i] for i in order]
+
+        n = len(shuffled)
+        train_end = math.floor(n * train_ratio)
+        val_end = train_end + math.floor(n * val_ratio)
+
+        # Guarantee at least one recording per split when the group is large enough
+        if n >= 3:
+            train_end = max(1, min(train_end, n - 2))
+            val_end = max(train_end + 1, min(val_end, n - 1))
+
+        splits["train"].extend(shuffled[:train_end])
+        splits["validation"].extend(shuffled[train_end:val_end])
+        splits["test"].extend(shuffled[val_end:])
+
+    return splits
 
 
 def load_wav(path: Path, target_rate: int) -> np.ndarray:

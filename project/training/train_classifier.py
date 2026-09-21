@@ -30,10 +30,13 @@ def run_epoch(model, loader, label_to_index, optimizer, device, beta):
     total_loss = total_correct = total_items = 0
     for batch in loader:
         audio = batch["audio"].to(device)
+        handcrafted_features = batch.get("handcrafted_features")
+        if handcrafted_features is not None:
+            handcrafted_features = handcrafted_features.to(device)
         labels = torch.tensor([label_to_index[label] for label in batch["era_label"]], device=device)
         if training:
             optimizer.zero_grad(set_to_none=True)
-        outputs = model(audio)
+        outputs = model(audio, handcrafted_features)
         vae_total, _, _ = audio_vae_loss(outputs, beta)
         classification_loss = nn.functional.cross_entropy(outputs["logits"], labels)
         loss = classification_loss + 0.1 * vae_total
@@ -50,6 +53,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the audio model with supervised classification")
     parser.add_argument("--data-dir", type=Path, default=Path("preprocessed"))
     parser.add_argument("--musicnn-root", type=Path, default=Path("musicnn"))
+    parser.add_argument("--handcrafted-csv", type=Path, default=None)
     parser.add_argument("--checkpoint", type=Path, default=Path("audio_classifier.pt"))
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -63,7 +67,15 @@ def main() -> None:
     paths = [args.data_dir / f"{split}.jsonl" for split in ("train", "validation", "test")]
     labels = read_labels(*paths)
     label_to_index = {label: index for index, label in enumerate(labels)}
-    datasets = [PreprocessedAudioDataset(path) for path in paths]
+    datasets = [PreprocessedAudioDataset(path, args.handcrafted_csv) for path in paths]
+    handcrafted_feature_dim = 0
+    if args.handcrafted_csv is not None:
+        train_features = datasets[0].handcrafted_matrix()
+        feature_mean = train_features.mean(axis=0)
+        feature_std = train_features.std(axis=0)
+        for dataset in datasets:
+            dataset.set_handcrafted_normalization(feature_mean, feature_std)
+        handcrafted_feature_dim = train_features.shape[1]
     loaders = [DataLoader(dataset, batch_size=args.batch_size, shuffle=index == 0) for index, dataset in enumerate(datasets)]
     config = ModelConfig(
         learning_rate=args.learning_rate,
@@ -72,7 +84,7 @@ def main() -> None:
         vae_dropout=args.dropout,
     )
     extractor = TensorFlowMusicNNExtractor(args.musicnn_root, config.musicnn_model)
-    model = AudioClassificationModel(len(labels), config, extractor).to(args.device)
+    model = AudioClassificationModel(len(labels), config, extractor, handcrafted_feature_dim).to(args.device)
     optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=args.learning_rate)
     best_validation_loss = float("inf")
     try:
