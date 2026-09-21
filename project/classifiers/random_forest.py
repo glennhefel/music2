@@ -23,8 +23,8 @@ class RandomForestEraClassifier:
     ) -> None:
         if n_estimators <= 0:
             raise ValueError("n_estimators must be positive")
-        if feature_name not in {"z", "transformer_embedding"}:
-            raise ValueError("feature_name must be 'z' or 'transformer_embedding'")
+        if feature_name not in {"z", "mu", "fused", "transformer_embedding"}:
+            raise ValueError("feature_name must be 'z', 'mu', 'fused', or 'transformer_embedding'")
         self.feature_name = feature_name
         self.model = RandomForestClassifier(
             n_estimators=n_estimators,

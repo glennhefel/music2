@@ -23,6 +23,7 @@ def run_track(
     track_path: str | Path,
     musicnn_root: str | Path,
     classifier_path: str | Path | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> dict[str, torch.Tensor]:
     config = ModelConfig(audio_segment_seconds=30.0, musicnn_window_seconds=3.0)
     windows = load_and_segment_audio(
@@ -34,6 +35,15 @@ def run_track(
     audio = torch.from_numpy(windows).unsqueeze(0)
     extractor = TensorFlowMusicNNExtractor(musicnn_root, config.musicnn_model)
     model = AudioRepresentationModel(config, feature_extractor=extractor).eval()
+
+    if checkpoint_path is not None and Path(checkpoint_path).is_file():
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("model", ckpt)
+        rep_dict = {k.replace("representation.", ""): v for k, v in state_dict.items() if k.startswith("representation.")}
+        if not rep_dict:
+            rep_dict = state_dict
+        model.load_state_dict(rep_dict, strict=False)
+        print(f"Loaded audio branch checkpoint from: {checkpoint_path}")
 
     try:
         with torch.inference_mode():
@@ -82,8 +92,14 @@ def main() -> None:
         default=None,
         help="Joblib classifier trained on the selected audio-model representation",
     )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("audio_classifier_fused_test.pt") if Path("audio_classifier_fused_test.pt").is_file() else None,
+        help="Path to trained PyTorch audio representation or classifier checkpoint",
+    )
     args = parser.parse_args()
-    run_track(args.track, args.musicnn_root, args.classifier)
+    run_track(args.track, args.musicnn_root, args.classifier, args.checkpoint)
 
 
 if __name__ == "__main__":
