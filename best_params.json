@@ -1,0 +1,11 @@
+{
+  "mode": "neural",
+  "best_val_accuracy": 0.8,
+  "best_params": {
+    "learning_rate": 0.00026361717499448993,
+    "vae_beta": 1.9928927735394526,
+    "dropout": 0.15000000000000002,
+    "batch_size": 32,
+    "vae_loss_weight": 0.23003817753518324
+  }
+}
