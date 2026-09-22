@@ -9,17 +9,11 @@ Supports two tuning modes:
        - d_model = 128, heads = 8, layers = 4, ff_dim = 512
        - vae_input_dim = 128, vae_hidden_dim = 128, vae_latent_dim = 64
      
-     NOTE ON EFFICIENCY:
-       Because MusicNN is frozen (freeze_musicnn=True), its 200-D feature
-       representations never change. This script automatically pre-caches the
-       200-D features on the first pass (or loads them if cached), so epochs
-       train in ~0.5s instead of 4 minutes!
-
 Usage:
-  # Random Forest baseline:
+  # Tune Random Forest baseline (fast, works right away on CPU):
   python optuna_tune.py --mode rf --n-trials 50 --csv Data/features_30_sec.csv
 
-  # Neural Classifier (ultra-fast with cached MusicNN features):
+  # Tune Neural Classifier (requires TensorFlow environment for MusicNN):
   python optuna_tune.py --mode neural --n-trials 20 --epochs 5 --data-dir preprocessed
 """
 
@@ -39,6 +33,7 @@ def _import_optuna():
     cwd = os.path.abspath(os.getcwd())
     optuna_folder = os.path.join(cwd, "optuna")
     if os.path.isdir(optuna_folder) and not os.path.isfile(os.path.join(optuna_folder, "__init__.py")):
+        # Temporarily drop current working directory from sys.path to load installed optuna package
         saved_path = list(sys.path)
         sys.path = [p for p in sys.path if os.path.abspath(p) != cwd]
         try:
@@ -49,6 +44,8 @@ def _import_optuna():
                 "Optuna is not installed in your Python environment.\n"
                 "Install it using:\n"
                 "    uv pip install --python .venv\\Scripts\\python.exe optuna\n"
+                "  or:\n"
+                "    pip install optuna\n"
             ) from err
         finally:
             sys.path = saved_path
@@ -157,7 +154,7 @@ class FastFeatureDataset:
         return item
 
 
-def load_or_cache_features(data_dir: Path, split: str, musicnn_root: Path, batch_size: int = 32):
+def load_or_cache_features(data_dir: Path, split: str, musicnn_root: Path, batch_size: int = 32, cache_prefix: str = "musicnn_cache"):
     """Extracts MusicNN features once and caches them to disk."""
     import torch
     from torch.utils.data import DataLoader
@@ -165,7 +162,7 @@ def load_or_cache_features(data_dir: Path, split: str, musicnn_root: Path, batch
     from project.models.musicnn_tensorflow import TensorFlowMusicNNExtractor
     from project.config import ModelConfig
 
-    cache_path = data_dir / f"musicnn_cache_{split}.pt"
+    cache_path = data_dir / f"{cache_prefix}_{split}.pt"
     manifest_path = data_dir / f"{split}.jsonl"
 
     if cache_path.is_file():
@@ -312,13 +309,14 @@ def tune_neural(
     epochs: int,
     device: str,
     output_file: Path,
+    cache_prefix: str = "musicnn_cache",
 ) -> dict[str, Any]:
     print(f"=== Preparing Optuna Study for Neural Classifier ({n_trials} trials, {epochs} epochs/trial) ===")
-    print(f"Device: {device}\n")
+    print(f"Device: {device}, Cache prefix: {cache_prefix}\n")
 
     # Step 1: Extract or load cached features
-    train_feats, train_labels_raw = load_or_cache_features(data_dir, "train", musicnn_root)
-    val_feats, val_labels_raw = load_or_cache_features(data_dir, "validation", musicnn_root)
+    train_feats, train_labels_raw = load_or_cache_features(data_dir, "train", musicnn_root, cache_prefix=cache_prefix)
+    val_feats, val_labels_raw = load_or_cache_features(data_dir, "validation", musicnn_root, cache_prefix=cache_prefix)
 
     # Create label mapping
     all_label_names = sorted(set(train_labels_raw))
@@ -380,6 +378,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("preprocessed"), help="Directory containing train/val/test .jsonl manifests")
     parser.add_argument("--musicnn-root", type=Path, default=Path("musicnn"), help="Directory with musicnn weights/checkpoints")
     parser.add_argument("--epochs", type=int, default=5, help="Number of epochs per neural trial")
+    parser.add_argument("--cache-prefix", default="msd_cache", help="Cache file prefix to load (e.g. 'msd_cache' or 'musicnn_cache')")
 
     args = parser.parse_args()
 
@@ -396,6 +395,7 @@ def main() -> None:
             args.epochs,
             device,
             args.output,
+            cache_prefix=args.cache_prefix,
         )
 
 

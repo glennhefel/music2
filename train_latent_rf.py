@@ -62,8 +62,10 @@ def extract_split_representations(
     model.load_state_dict(ckpt["model"])
     model.to(device).eval()
 
-    # Load cached MusicNN features
-    cache_path = data_dir / f"musicnn_cache_{split}.pt"
+    # Load cached MusicNN features (auto-detect MSD vs MTT)
+    is_msd = "MSD" in config.musicnn_model or "msd" in checkpoint_path.stem.lower()
+    cache_prefix = "msd_cache" if is_msd else "musicnn_cache"
+    cache_path = data_dir / f"{cache_prefix}_{split}.pt"
     if not cache_path.is_file():
         raise FileNotFoundError(f"Missing cache: {cache_path}. Run extraction first.")
     cached = torch.load(cache_path, weights_only=False)
@@ -207,13 +209,16 @@ def main() -> None:
     train_data = extract_split_representations(args.checkpoint, args.data_dir, "train", args.handcrafted_csv, args.device)
     test_data = extract_split_representations(args.checkpoint, args.data_dir, "test", args.handcrafted_csv, args.device)
 
+    is_msd = "msd" in str(args.checkpoint).lower()
+    suffix = "_msd" if is_msd else ""
+
     # 1. Random Forest on pure 64-D VAE latent space
     train_and_eval_rf(
         train_data,
         test_data,
         feat_key="mu",
         name="64-D Pure VAE Latent (mu)",
-        output_path=Path("rf_latent_classifier.pkl"),
+        output_path=Path(f"rf_latent_classifier{suffix}.pkl"),
         n_estimators=args.estimators,
         max_depth=args.max_depth,
         seed=args.seed,
@@ -225,7 +230,7 @@ def main() -> None:
         test_data,
         feat_key="fused",
         name="121-D Fused Representation (VAE mu + Handcrafted)",
-        output_path=Path("rf_fused_classifier.pkl"),
+        output_path=Path(f"rf_fused_classifier{suffix}.pkl"),
         n_estimators=args.estimators,
         max_depth=args.max_depth,
         seed=args.seed,

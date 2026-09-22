@@ -13,6 +13,8 @@ class ModelConfig:
     transformer_layers: int = 4
     transformer_ff_dim: int = 512
     transformer_dropout: float = 0.15
+    transformer_norm_first: bool = False
+    transformer_pooling: str = "mean"
     vae_input_dim: int = 128
     vae_hidden_dim: int = 128
     vae_latent_dim: int = 64

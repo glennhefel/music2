@@ -24,7 +24,7 @@ def read_labels(*manifest_paths: Path) -> list[str]:
     return result
 
 
-def run_epoch(model, loader, label_to_index, optimizer, device, beta, vae_weight=0.23):
+def run_epoch(model, loader, label_to_index, optimizer, scheduler, device, beta, vae_weight=0.23, label_smoothing=0.1):
     training = optimizer is not None
     model.train(training)
     total_loss = total_correct = total_items = 0
@@ -38,7 +38,9 @@ def run_epoch(model, loader, label_to_index, optimizer, device, beta, vae_weight
             optimizer.zero_grad(set_to_none=True)
         outputs = model(audio, handcrafted_features)
         vae_total, _, _ = audio_vae_loss(outputs, beta)
-        classification_loss = nn.functional.cross_entropy(outputs["logits"], labels)
+        classification_loss = nn.functional.cross_entropy(
+            outputs["logits"], labels, label_smoothing=label_smoothing if training else 0.0
+        )
         loss = classification_loss + vae_weight * vae_total
         if training:
             loss.backward()
@@ -46,6 +48,8 @@ def run_epoch(model, loader, label_to_index, optimizer, device, beta, vae_weight
         total_loss += loss.item() * len(labels)
         total_correct += (outputs["logits"].argmax(dim=1) == labels).sum().item()
         total_items += len(labels)
+    if training and scheduler is not None:
+        scheduler.step()
     return total_loss / total_items, total_correct / total_items
 
 
@@ -54,6 +58,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("preprocessed"))
     parser.add_argument("--musicnn-root", type=Path, default=Path("musicnn"))
     parser.add_argument("--handcrafted-csv", type=Path, default=None)
+    parser.add_argument("--musicnn-model", default="MSD_musicnn", choices=["MTT_musicnn", "MSD_musicnn", "MSD_musicnn_big"], help="MusicNN backbone model")
     parser.add_argument("--checkpoint", type=Path, default=Path("audio_classifier.pt"))
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -61,6 +66,7 @@ def main() -> None:
     parser.add_argument("--beta", type=float, default=ModelConfig().vae_beta)
     parser.add_argument("--dropout", type=float, default=ModelConfig().transformer_dropout)
     parser.add_argument("--vae-loss-weight", type=float, default=0.23)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     if not 0.0 <= args.dropout < 1.0:
@@ -79,6 +85,7 @@ def main() -> None:
         handcrafted_feature_dim = train_features.shape[1]
     loaders = [DataLoader(dataset, batch_size=args.batch_size, shuffle=index == 0) for index, dataset in enumerate(datasets)]
     config = ModelConfig(
+        musicnn_model=args.musicnn_model,
         learning_rate=args.learning_rate,
         vae_beta=args.beta,
         transformer_dropout=args.dropout,
@@ -87,20 +94,22 @@ def main() -> None:
     extractor = TensorFlowMusicNNExtractor(args.musicnn_root, config.musicnn_model)
     model = AudioClassificationModel(len(labels), config, extractor, handcrafted_feature_dim).to(args.device)
     optimizer = torch.optim.AdamW((parameter for parameter in model.parameters() if parameter.requires_grad), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.learning_rate / 20)
     best_validation_loss = float("inf")
     try:
         for epoch in range(1, args.epochs + 1):
-            train_loss, train_accuracy = run_epoch(model, loaders[0], label_to_index, optimizer, args.device, args.beta, args.vae_loss_weight)
+            train_loss, train_accuracy = run_epoch(model, loaders[0], label_to_index, optimizer, scheduler, args.device, args.beta, args.vae_loss_weight, args.label_smoothing)
             with torch.no_grad():
-                validation_loss, validation_accuracy = run_epoch(model, loaders[1], label_to_index, None, args.device, args.beta, args.vae_loss_weight)
-            print(f"epoch={epoch} train_loss={train_loss:.6f} train_accuracy={train_accuracy:.4f} validation_loss={validation_loss:.6f} validation_accuracy={validation_accuracy:.4f}")
+                validation_loss, validation_accuracy = run_epoch(model, loaders[1], label_to_index, None, None, args.device, args.beta, args.vae_loss_weight)
+            lr_now = scheduler.get_last_lr()[0]
+            print(f"epoch={epoch} lr={lr_now:.2e} train_loss={train_loss:.6f} train_accuracy={train_accuracy:.4f} validation_loss={validation_loss:.6f} validation_accuracy={validation_accuracy:.4f}")
             if validation_loss < best_validation_loss:
                 best_validation_loss = validation_loss
                 torch.save({"model": model.state_dict(), "labels": labels, "config": config.__dict__}, args.checkpoint)
         checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=True)
         model.load_state_dict(checkpoint["model"])
         with torch.no_grad():
-            test_loss, test_accuracy = run_epoch(model, loaders[2], label_to_index, None, args.device, args.beta, args.vae_loss_weight)
+            test_loss, test_accuracy = run_epoch(model, loaders[2], label_to_index, None, None, args.device, args.beta, args.vae_loss_weight)
         print(f"test_loss={test_loss:.6f} test_accuracy={test_accuracy:.4f}")
         print(f"classes={labels}")
         print(f"saved={args.checkpoint}")

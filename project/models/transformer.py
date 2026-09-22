@@ -20,16 +20,68 @@ class SinusoidalPositionalEncoding(nn.Module):
         return x + self.encoding[:, : x.shape[1]]
 
 
+class AttentivePooling(nn.Module):
+    """Learned attention pooling over temporal tokens."""
+    def __init__(self, d_model: int, hidden_dim: int = 64) -> None:
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: [B, T, D]
+        weights = torch.softmax(self.proj(x), dim=1)  # [B, T, 1]
+        return (x * weights).sum(dim=1)  # [B, D]
+
+
 class MusicTransformer(nn.Module):
-    def __init__(self, d_model: int = 128, heads: int = 8, layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        d_model: int = 128,
+        heads: int = 8,
+        layers: int = 4,
+        ff_dim: int = 512,
+        dropout: float = 0.1,
+        norm_first: bool = False,
+        pooling: str = "mean",
+    ) -> None:
         super().__init__()
         if d_model % heads:
             raise ValueError("d_model must be divisible by heads")
         self.position = SinusoidalPositionalEncoding(d_model)
-        layer = nn.TransformerEncoderLayer(d_model, heads, ff_dim, dropout, activation="gelu", batch_first=True, norm_first=False)
+        layer = nn.TransformerEncoderLayer(
+            d_model,
+            heads,
+            ff_dim,
+            dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=norm_first,
+        )
         self.encoder = nn.TransformerEncoder(layer, layers, norm=nn.LayerNorm(d_model))
+        self.pooling = pooling
+        if pooling == "attention":
+            self.pooler = AttentivePooling(d_model)
+        elif pooling == "mean":
+            self.pooler = None
+        else:
+            raise ValueError(f"Unknown pooling type: {pooling}")
+
+        if norm_first:
+            self.output_norm = nn.LayerNorm(d_model)
+        else:
+            self.output_norm = None
 
     def forward(self, x: Tensor) -> Tensor:
         if x.ndim != 3 or x.shape[-1] != 128:
             raise ValueError("Expected Transformer input with shape [B, windows, 128]")
-        return self.encoder(self.position(x)).mean(dim=1)
+        encoded = self.encoder(self.position(x))
+        if self.pooler is not None:
+            pooled = self.pooler(encoded)
+        else:
+            pooled = encoded.mean(dim=1)
+        if self.output_norm is not None:
+            pooled = self.output_norm(pooled)
+        return pooled
